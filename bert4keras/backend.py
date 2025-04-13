@@ -12,50 +12,44 @@ from tensorflow.python.eager import tape
 from tensorflow.python.ops.custom_gradient import _graph_mode_decorator
 
 # 判断是tf.keras还是纯keras的标记
-is_tf_keras = strtobool(os.environ.get('TF_KERAS', '0'))
+is_tf_keras = strtobool(os.environ.get("TF_KERAS", "0"))
 
 if is_tf_keras:
-    sys.modules['keras'] = tf.keras
+    sys.modules["keras"] = tf.keras
 
 import keras
 import keras.backend as K
 
 # 判断是否启用重计算（通过时间换空间）
-do_recompute = strtobool(os.environ.get('RECOMPUTE', '0'))
+do_recompute = strtobool(os.environ.get("RECOMPUTE", "0"))
 
 
 def get_available_gpus():
-    """获取可用的GPU列表
-    """
+    """获取可用的GPU列表"""
     devices = device_lib.list_local_devices()
-    devices = [x.name for x in devices if x.device_type == 'GPU']
+    devices = [x.name for x in devices if x.device_type == "GPU"]
     return devices
 
 
 def gelu_erf(x):
-    """基于Erf直接计算的gelu函数
-    """
+    """基于Erf直接计算的gelu函数"""
     return 0.5 * x * (1.0 + tf.math.erf(x / np.sqrt(2.0)))
 
 
 def gelu_tanh(x):
-    """基于Tanh近似计算的gelu函数
-    """
-    cdf = 0.5 * (
-        1.0 + K.tanh((np.sqrt(2 / np.pi) * (x + 0.044715 * K.pow(x, 3))))
-    )
+    """基于Tanh近似计算的gelu函数"""
+    cdf = 0.5 * (1.0 + K.tanh((np.sqrt(2 / np.pi) * (x + 0.044715 * K.pow(x, 3)))))
     return x * cdf
 
 
 def set_gelu(version):
-    """设置gelu版本
-    """
+    """设置gelu版本"""
     version = version.lower()
-    assert version in ['erf', 'tanh'], 'gelu version must be erf or tanh'
-    if version == 'erf':
-        keras.utils.get_custom_objects()['gelu'] = gelu_erf
+    assert version in ["erf", "tanh"], "gelu version must be erf or tanh"
+    if version == "erf":
+        keras.utils.get_custom_objects()["gelu"] = gelu_erf
     else:
-        keras.utils.get_custom_objects()['gelu'] = gelu_tanh
+        keras.utils.get_custom_objects()["gelu"] = gelu_tanh
 
 
 def piecewise_linear(t, schedule, from_zero=True):
@@ -156,8 +150,7 @@ def reshape(tensor, *args):
 
 
 def flatten(tensor, start=None, end=None):
-    """将tensor从start到end的维度展平
-    """
+    """将tensor从start到end的维度展平"""
     start, end = start or 0, end or K.ndim(tensor)
     shape = K.shape(tensor)
     shape = [s or shape[i] for i, s in enumerate(K.int_shape(tensor))]
@@ -166,8 +159,7 @@ def flatten(tensor, start=None, end=None):
 
 
 def dtype(x):
-    """增强K.dtype的容错性
-    """
+    """增强K.dtype的容错性"""
     try:
         return K.dtype(x)
     except:
@@ -175,8 +167,7 @@ def dtype(x):
 
 
 def where(cond, x, y):
-    """给tf.where加上自动广播
-    """
+    """给tf.where加上自动广播"""
     shape = tf.broadcast_dynamic_shape(K.shape(x), K.shape(y))
     shape = tf.broadcast_dynamic_shape(K.shape(cond), shape)
 
@@ -191,16 +182,14 @@ def where(cond, x, y):
         x = tf.broadcast_to(x, shape)
         y = tf.broadcast_to(y, shape)
 
-    if dtype(cond) != 'bool':
-        cond = K.cast(cond, 'bool')
+    if dtype(cond) != "bool":
+        cond = K.cast(cond, "bool")
 
     cond = tf.broadcast_to(cond, shape)
     return tf.where(cond, x, y)
 
 
-def sequence_masking(
-    x, mask=None, value=0, axis=None, bias=None, return_mask=False
-):
+def sequence_masking(x, mask=None, value=0, axis=None, bias=None, return_mask=False):
     """为序列条件mask的函数
     mask: 形如(batch_size, seq_len)的bool矩阵；
     value: mask部分要被替换成的值，可以是'-inf'或'inf'；
@@ -210,7 +199,7 @@ def sequence_masking(
     """
     if not (mask is None and bias is None):
         if mask is None:
-            if K.dtype(bias) == 'bool':
+            if K.dtype(bias) == "bool":
                 mask = bias
                 x = K.where(mask, x, value)
             else:
@@ -225,8 +214,8 @@ def sequence_masking(
 
             axes = [axis if axis >= 0 else K.ndim(x) + axis for axis in axes]
 
-            if K.dtype(mask) != 'bool':
-                mask = K.cast(mask, 'bool')
+            if K.dtype(mask) != "bool":
+                mask = K.cast(mask, "bool")
 
             full_mask = align(mask, [0, axes[0]], K.ndim(x))
             for axis in axes[1:]:
@@ -235,7 +224,7 @@ def sequence_masking(
             mask = full_mask
             if bias is None:
                 x = K.where(mask, x, value)
-            elif K.dtype(bias) == 'bool':
+            elif K.dtype(bias) == "bool":
                 mask = mask & bias
                 x = K.where(mask, x, value)
             else:
@@ -248,10 +237,9 @@ def sequence_masking(
 
 
 def batch_gather(params, indices):
-    """同tf旧版本的batch_gather
-    """
-    if K.dtype(indices)[:3] != 'int':
-        indices = K.cast(indices, 'int32')
+    """同tf旧版本的batch_gather"""
+    if K.dtype(indices)[:3] != "int":
+        indices = K.cast(indices, "int32")
 
     try:
         return tf.gather(params, indices, batch_dims=K.ndim(indices) - 1)
@@ -259,19 +247,11 @@ def batch_gather(params, indices):
         try:
             return tf.batch_gather(params, indices)
         except Exception as e2:
-            raise ValueError('%s\n%s\n' % (e1.message, e2.message))
+            raise ValueError("%s\n%s\n" % (e1.message, e2.message))
 
 
-def pool1d(
-    x,
-    pool_size,
-    strides=1,
-    padding='valid',
-    data_format=None,
-    pool_mode='max'
-):
-    """向量序列的pool函数
-    """
+def pool1d(x, pool_size, strides=1, padding="valid", data_format=None, pool_mode="max"):
+    """向量序列的pool函数"""
     x = K.expand_dims(x, 1)
     x = K.pool2d(
         x,
@@ -279,45 +259,74 @@ def pool1d(
         strides=(1, strides),
         padding=padding,
         data_format=data_format,
-        pool_mode=pool_mode
+        pool_mode=pool_mode,
     )
     return x[:, 0]
 
 
 def divisible_temporal_padding(x, n):
-    """将一维向量序列右padding到长度能被n整除
-    """
+    """将一维向量序列右padding到长度能被n整除"""
     r_len = K.shape(x)[1] % n
     p_len = K.where(r_len > 0, n - r_len, 0)
     return K.temporal_padding(x, (0, p_len))
 
 
 def root_mean_square(x, axis=None, keepdims=False):
-    """均方根，相当于模长的变体
-    """
+    """均方根，相当于模长的变体"""
     return K.sqrt(K.mean(K.square(x), axis=axis, keepdims=keepdims))
 
 
 def swish(x):
-    """swish函数（这样封装过后才有 __name__ 属性）
-    """
+    """swish函数（这样封装过后才有 __name__ 属性）"""
     return tf.nn.swish(x)
 
 
 def leaky_relu(x, alpha=0.2):
-    """leaky relu函数（这样封装过后才有 __name__ 属性）
-    """
+    """leaky relu函数（这样封装过后才有 __name__ 属性）"""
     return tf.nn.leaky_relu(x, alpha=alpha)
 
 
-def attention_normalize(a, mask=None, axis=-1, method='softmax', bias=None):
+def sparsemax(logits, axis=-1):
+    """
+    Compute the sparsemax activation along the specified axis.
+
+    Args:
+        logits: A tensor of logits.
+        axis: The axis along which to apply sparsemax.
+
+    Returns:
+        A tensor with the same shape as logits where sparsemax has been applied.
+    """
+    logits = tf.convert_to_tensor(logits)
+    # for numerical stability
+    z = logits - tf.reduce_max(logits, axis=axis, keepdims=True)
+    # sort z in descending order.
+    z_sorted = tf.sort(z, direction="DESCENDING", axis=axis)
+    z_cumsum = tf.cumsum(z_sorted, axis=axis)
+
+    r = tf.cast(tf.range(1, tf.shape(z)[axis] + 1), logits.dtype)
+    r_shape = [1] * tf.rank(z)
+    r_shape[axis] = -1
+    r = tf.reshape(r, r_shape)
+
+    # determine the support
+    support = tf.cast(r * z_sorted > (z_cumsum - 1), logits.dtype)
+    k_z = tf.reduce_sum(support, axis=axis, keepdims=True)
+    tau_sum = tf.reduce_sum(z_sorted * support, axis=axis, keepdims=True)
+    tau = (tau_sum - 1) / k_z
+    return tf.maximum(z - tau, 0)
+
+
+def attention_normalize(a, mask=None, axis=-1, method="sparsemax", bias=None):
     """不同的注意力归一化方案
     softmax：常规/标准的指数归一化；
     squared_relu：来自 https://arxiv.org/abs/2202.10447 ；
     softmax_plus：来自 https://kexue.fm/archives/8823 。
     """
     a, mask = sequence_masking(a, mask, -np.inf, axis, bias, True)
-    if method == 'softmax':
+    if method == "sparsemax":
+        return sparsemax(a, axis=axis)
+    elif method == "softmax":
         return K.softmax(a, axis=axis)
     else:
         if mask is None:
@@ -325,21 +334,20 @@ def attention_normalize(a, mask=None, axis=-1, method='softmax', bias=None):
         else:
             mask = K.cast(mask, K.floatx())
             l = K.sum(mask, axis=axis, keepdims=True)
-        if method == 'squared_relu':
-            return K.relu(a)**2 / l
-        elif method == 'softmax_plus':
+        if method == "squared_relu":
+            return K.relu(a) ** 2 / l
+        elif method == "softmax_plus":
             l = K.maximum(l, 16)  # 极短序列scale反而不好
             return K.softmax(a * K.log(l) / np.log(512), axis=axis)
     return a
 
 
 def sinusoidal_embeddings(pos, dim, base=10000):
-    """计算pos位置的dim维sinusoidal编码
-    """
+    """计算pos位置的dim维sinusoidal编码"""
     assert dim % 2 == 0
     indices = K.arange(0, dim // 2, dtype=K.floatx())
     indices = K.pow(K.cast(base, K.floatx()), -2 * indices / dim)
-    embeddings = tf.einsum('...,d->...d', pos, indices)
+    embeddings = tf.einsum("...,d->...d", pos, indices)
     embeddings = K.stack([K.sin(embeddings), K.cos(embeddings)], axis=-1)
     embeddings = K.flatten(embeddings, -2)
     return embeddings
@@ -349,9 +357,9 @@ class Sinusoidal(keras.initializers.Initializer):
     """Sin-Cos位置向量初始化器
     来自：https://arxiv.org/abs/1706.03762
     """
+
     def __call__(self, shape, dtype=None):
-        """Sin-Cos形式的位置向量
-        """
+        """Sin-Cos形式的位置向量"""
         size, dim = shape
         return sinusoidal_embeddings(K.arange(size, dtype=K.floatx()), dim)
 
@@ -361,10 +369,10 @@ def apply_rotary_position_embeddings(sinusoidal, *tensors):
     其中，sinusoidal.shape=[b, n, d]，tensors为tensor的列表，而
     tensor.shape=[b, n, ..., d]。
     """
-    assert len(tensors) > 0, 'at least one input tensor'
-    assert all([
-        K.int_shape(tensor) == K.int_shape(tensors[0]) for tensor in tensors[1:]
-    ]), 'all tensors must have the same shape'
+    assert len(tensors) > 0, "at least one input tensor"
+    assert all(
+        [K.int_shape(tensor) == K.int_shape(tensors[0]) for tensor in tensors[1:]]
+    ), "all tensors must have the same shape"
     ndim = K.ndim(tensors[0])
     sinusoidal = align(sinusoidal, [0, 1, -1], ndim)
     cos_pos = K.repeat_elements(sinusoidal[..., 1::2], 2, -1)
@@ -430,15 +438,13 @@ def sparse_multilabel_categorical_crossentropy(y_true, y_pred, mask_zero=False):
 
 
 def symbolic(f):
-    """恒等装饰器（兼容旧版本keras用）
-    """
+    """恒等装饰器（兼容旧版本keras用）"""
     return f
 
 
 def graph_mode_decorator(f, *args, **kwargs):
-    """tf 2.1与之前版本的传参方式不一样，这里做个同步
-    """
-    if tf.__version__ < '2.1':
+    """tf 2.1与之前版本的传参方式不一样，这里做个同步"""
+    if tf.__version__ < "2.1":
         return _graph_mode_decorator(f, *args, **kwargs)
     else:
         return _graph_mode_decorator(f, args, kwargs)
@@ -457,18 +463,16 @@ def recompute_grad(call):
         """
         flat_inputs = nest.flatten(inputs)
         call_args = tf_inspect.getfullargspec(call).args
-        for key in ['mask', 'training']:
+        for key in ["mask", "training"]:
             if key not in call_args and key in kwargs:
                 del kwargs[key]
 
         def kernel_call():
-            """定义前向计算
-            """
+            """定义前向计算"""
             return call(self, inputs, **kwargs)
 
         def call_and_grad(*inputs):
-            """定义前向计算和反向计算
-            """
+            """定义前向计算和反向计算"""
             if is_tf_keras:
                 with tape.stop_recording():
                     outputs = kernel_call()
@@ -484,11 +488,9 @@ def recompute_grad(call):
                     t.watch(watches)
                     with tf.control_dependencies([doutputs]):
                         outputs = kernel_call()
-                grads = t.gradient(
-                    outputs, watches, output_gradients=[doutputs]
-                )
+                grads = t.gradient(outputs, watches, output_gradients=[doutputs])
                 del t
-                return grads[:len(inputs)], grads[len(inputs):]
+                return grads[: len(inputs)], grads[len(inputs) :]
 
             return outputs, grad_fn
 
@@ -502,9 +504,7 @@ def recompute_grad(call):
 
             watches = flat_inputs + self.trainable_weights
             watches = [tf.convert_to_tensor(x) for x in watches]
-            tape.record_operation(
-                call.__name__, flat_outputs, watches, actual_grad_fn
-            )
+            tape.record_operation(call.__name__, flat_outputs, watches, actual_grad_fn)
             return outputs
         else:  # keras + tf >= 1.14 均可用
             return graph_mode_decorator(call_and_grad, *flat_inputs)
@@ -513,27 +513,27 @@ def recompute_grad(call):
 
 
 # 给旧版keras新增symbolic（装饰器），以兼容optimizers.py
-K.symbolic = getattr(K, 'symbolic', None) or symbolic
+K.symbolic = getattr(K, "symbolic", None) or symbolic
 
 # 给tf.keras补充上logsumexp
-K.logsumexp = getattr(K, 'logsumexp', None) or tf.math.reduce_logsumexp
+K.logsumexp = getattr(K, "logsumexp", None) or tf.math.reduce_logsumexp
 
 # 添加到 keras.backend 上，使其可以像 K.epsilon() 那样操作
 K.reshape = reshape
 K.flatten = flatten
 K.where = where
-sys.modules['tensorflow.keras.backend'] = K
+sys.modules["tensorflow.keras.backend"] = K
 
 custom_objects = {
-    'gelu_erf': gelu_erf,
-    'gelu_tanh': gelu_tanh,
-    'gelu': gelu_erf,
-    'root_mean_square': root_mean_square,
-    'swish': swish,
-    'leaky_relu': leaky_relu,
-    'Sinusoidal': Sinusoidal,
-    'multilabel_categorical_crossentropy': multilabel_categorical_crossentropy,
-    'initializer': keras.initializers.glorot_uniform,  # 就当是默认初始化方案吧
+    "gelu_erf": gelu_erf,
+    "gelu_tanh": gelu_tanh,
+    "gelu": gelu_erf,
+    "root_mean_square": root_mean_square,
+    "swish": swish,
+    "leaky_relu": leaky_relu,
+    "Sinusoidal": Sinusoidal,
+    "multilabel_categorical_crossentropy": multilabel_categorical_crossentropy,
+    "initializer": keras.initializers.glorot_uniform,  # 就当是默认初始化方案吧
 }
 
 keras.utils.get_custom_objects().update(custom_objects)
