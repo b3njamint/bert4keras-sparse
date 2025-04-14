@@ -25,9 +25,9 @@ train_frac = 0.01  # 标注数据的比例
 use_vat = True  # 可以比较True/False的效果
 
 # BERT base
-config_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '/root/kg/bert/chinese_L-12_H-768_A-12/vocab.txt'
+config_path = "/root/kg/bert/chinese_L-12_H-768_A-12/bert_config.json"
+checkpoint_path = "/root/kg/bert/chinese_L-12_H-768_A-12/bert_model.ckpt"
+dict_path = "/root/kg/bert/chinese_L-12_H-768_A-12/vocab.txt"
 
 
 def load_data(filename):
@@ -35,17 +35,17 @@ def load_data(filename):
     单条格式：(文本, 标签id)
     """
     D = []
-    with open(filename, encoding='utf-8') as f:
+    with open(filename, encoding="utf-8") as f:
         for l in f:
-            text, label = l.strip().split('\t')
+            text, label = l.strip().split("\t")
             D.append((text, int(label)))
     return D
 
 
 # 加载数据集
-train_data = load_data('datasets/sentiment/sentiment.train.data')
-valid_data = load_data('datasets/sentiment/sentiment.valid.data')
-test_data = load_data('datasets/sentiment/sentiment.test.data')
+train_data = load_data("datasets/sentiment/sentiment.train.data")
+valid_data = load_data("datasets/sentiment/sentiment.valid.data")
+test_data = load_data("datasets/sentiment/sentiment.test.data")
 
 # 模拟标注和非标注数据
 num_labeled = int(len(train_data) * train_frac)
@@ -57,8 +57,8 @@ tokenizer = Tokenizer(dict_path, do_lower_case=True)
 
 
 class data_generator(DataGenerator):
-    """数据生成器
-    """
+    """数据生成器"""
+
     def __iter__(self, random=False):
         batch_token_ids, batch_segment_ids, batch_labels = [], [], []
         for is_end, (text, label) in self.sample(random):
@@ -88,9 +88,7 @@ bert = build_transformer_model(
 
 output = Lambda(lambda x: x[:, 0])(bert.model.output)
 output = Dense(
-    units=num_classes,
-    activation='softmax',
-    kernel_initializer=bert.initializer
+    units=num_classes, activation="sparsemax", kernel_initializer=bert.initializer
 )(output)
 
 # 用于正常训练的模型
@@ -98,23 +96,21 @@ model = keras.models.Model(bert.model.input, output)
 model.summary()
 
 model.compile(
-    loss='kld',
+    loss="kld",
     optimizer=Adam(2e-5),
-    metrics=['categorical_accuracy'],
+    metrics=["categorical_accuracy"],
 )
 
 # 用于虚拟对抗训练的模型
 model_vat = keras.models.Model(bert.model.input, output)
 model_vat.compile(
-    loss='kld',
+    loss="kld",
     optimizer=Adam(1e-5),
-    metrics=['categorical_accuracy'],
+    metrics=["categorical_accuracy"],
 )
 
 
-def virtual_adversarial_training(
-    model, embedding_name, epsilon=1, xi=10, iters=1
-):
+def virtual_adversarial_training(model, embedding_name, epsilon=1, xi=10, iters=1):
     """给模型添加虚拟对抗训练
     其中model是需要添加对抗训练的keras模型，embedding_name
     则是model里边Embedding层的名字。要在模型compile之后使用。
@@ -129,7 +125,7 @@ def virtual_adversarial_training(
         if embedding_layer is not None:
             break
     if embedding_layer is None:
-        raise Exception('Embedding layer not found')
+        raise Exception("Embedding layer not found")
 
     # 求Embedding梯度
     embeddings = embedding_layer.embeddings  # Embedding矩阵
@@ -143,12 +139,12 @@ def virtual_adversarial_training(
     model_outputs = K.function(
         inputs=inputs,
         outputs=model.outputs,
-        name='model_outputs',
+        name="model_outputs",
     )  # 模型输出函数
     embedding_gradients = K.function(
         inputs=inputs,
         outputs=[gradients],
-        name='embedding_gradients',
+        name="embedding_gradients",
     )  # 模型梯度函数
 
     def l2_normalize(x):
@@ -173,11 +169,11 @@ def virtual_adversarial_training(
 
 
 # 写好函数后，启用对抗训练只需要一行代码
-virtual_adversarial_training(model_vat, 'Embedding-Token')
+virtual_adversarial_training(model_vat, "Embedding-Token")
 
 
 def evaluate(data):
-    total, right = 0., 0.
+    total, right = 0.0, 0.0
     for x_true, y_true in data:
         y_pred = model.predict(x_true).argmax(axis=1)
         y_true = y_true.argmax(axis=1)
@@ -187,21 +183,21 @@ def evaluate(data):
 
 
 class Evaluator(keras.callbacks.Callback):
-    """评估与保存
-    """
+    """评估与保存"""
+
     def __init__(self):
-        self.best_val_acc = 0.
+        self.best_val_acc = 0.0
         self.data = data_generator(unlabeled_data, batch_size).forfit()
 
     def on_epoch_end(self, epoch, logs=None):
         val_acc = evaluate(valid_generator)
         if val_acc > self.best_val_acc:
             self.best_val_acc = val_acc
-            model.save_weights('best_model.weights')
+            model.save_weights("best_model.weights")
         test_acc = evaluate(test_generator)
         print(
-            u'val_acc: %.5f, best_val_acc: %.5f, test_acc: %.5f\n' %
-            (val_acc, self.best_val_acc, test_acc)
+            "val_acc: %.5f, best_val_acc: %.5f, test_acc: %.5f\n"
+            % (val_acc, self.best_val_acc, test_acc)
         )
 
     def on_batch_end(self, batch, logs=None):
@@ -210,17 +206,14 @@ class Evaluator(keras.callbacks.Callback):
             model_vat.train_on_batch(dx, dy)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     evaluator = Evaluator()
 
     model.fit(
-        train_generator.forfit(),
-        steps_per_epoch=30,
-        epochs=100,
-        callbacks=[evaluator]
+        train_generator.forfit(), steps_per_epoch=30, epochs=100, callbacks=[evaluator]
     )
 
 else:
 
-    model.load_weights('best_model.weights')
+    model.load_weights("best_model.weights")

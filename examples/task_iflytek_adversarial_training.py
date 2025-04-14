@@ -20,9 +20,9 @@ maxlen = 128
 batch_size = 32
 
 # BERT base
-config_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_config.json'
-checkpoint_path = '/root/kg/bert/chinese_L-12_H-768_A-12/bert_model.ckpt'
-dict_path = '/root/kg/bert/chinese_L-12_H-768_A-12/vocab.txt'
+config_path = "/root/kg/bert/chinese_L-12_H-768_A-12/bert_config.json"
+checkpoint_path = "/root/kg/bert/chinese_L-12_H-768_A-12/bert_model.ckpt"
+dict_path = "/root/kg/bert/chinese_L-12_H-768_A-12/vocab.txt"
 
 
 def load_data(filename):
@@ -33,26 +33,22 @@ def load_data(filename):
     with open(filename) as f:
         for i, l in enumerate(f):
             l = json.loads(l)
-            text, label = l['sentence'], l['label']
+            text, label = l["sentence"], l["label"]
             D.append((text, int(label)))
     return D
 
 
 # 加载数据集
-train_data = load_data(
-    '/root/CLUE-master/baselines/CLUEdataset/iflytek/train.json'
-)
-valid_data = load_data(
-    '/root/CLUE-master/baselines/CLUEdataset/iflytek/dev.json'
-)
+train_data = load_data("/root/CLUE-master/baselines/CLUEdataset/iflytek/train.json")
+valid_data = load_data("/root/CLUE-master/baselines/CLUEdataset/iflytek/dev.json")
 
 # 建立分词器
 tokenizer = Tokenizer(dict_path, do_lower_case=True)
 
 
 class data_generator(DataGenerator):
-    """数据生成器
-    """
+    """数据生成器"""
+
     def __iter__(self, random=False):
         batch_token_ids, batch_segment_ids, batch_labels = [], [], []
         for is_end, (text, label) in self.sample(random):
@@ -81,18 +77,16 @@ bert = build_transformer_model(
 
 output = Lambda(lambda x: x[:, 0])(bert.model.output)
 output = Dense(
-    units=num_classes,
-    activation='softmax',
-    kernel_initializer=bert.initializer
+    units=num_classes, activation="sparsemax", kernel_initializer=bert.initializer
 )(output)
 
 model = keras.models.Model(bert.model.input, output)
 model.summary()
 
 model.compile(
-    loss='sparse_categorical_crossentropy',
+    loss="sparse_categorical_crossentropy",
     optimizer=Adam(2e-5),
-    metrics=['sparse_categorical_accuracy'],
+    metrics=["sparse_categorical_accuracy"],
 )
 
 
@@ -111,7 +105,7 @@ def adversarial_training(model, embedding_name, epsilon=1):
         if embedding_layer is not None:
             break
     if embedding_layer is None:
-        raise Exception('Embedding layer not found')
+        raise Exception("Embedding layer not found")
 
     # 求Embedding梯度
     embeddings = embedding_layer.embeddings  # Embedding矩阵
@@ -125,7 +119,7 @@ def adversarial_training(model, embedding_name, epsilon=1):
     embedding_gradients = K.function(
         inputs=inputs,
         outputs=[gradients],
-        name='embedding_gradients',
+        name="embedding_gradients",
     )  # 封装为函数
 
     def train_function(inputs):  # 重新定义训练函数
@@ -140,11 +134,11 @@ def adversarial_training(model, embedding_name, epsilon=1):
 
 
 # 写好函数后，启用对抗训练只需要一行代码
-adversarial_training(model, 'Embedding-Token', 0.5)
+adversarial_training(model, "Embedding-Token", 0.5)
 
 
 def evaluate(data):
-    total, right = 0., 0.
+    total, right = 0.0, 0.0
     for x_true, y_true in data:
         y_pred = model.predict(x_true).argmax(axis=1)
         y_true = y_true[:, 0]
@@ -154,39 +148,36 @@ def evaluate(data):
 
 
 class Evaluator(keras.callbacks.Callback):
-    """评估与保存
-    """
+    """评估与保存"""
+
     def __init__(self):
-        self.best_val_acc = 0.
+        self.best_val_acc = 0.0
 
     def on_epoch_end(self, epoch, logs=None):
         val_acc = evaluate(valid_generator)
         if val_acc > self.best_val_acc:
             self.best_val_acc = val_acc
-            model.save_weights('best_model.weights')
-        print(
-            u'val_acc: %.5f, best_val_acc: %.5f\n' %
-            (val_acc, self.best_val_acc)
-        )
+            model.save_weights("best_model.weights")
+        print("val_acc: %.5f, best_val_acc: %.5f\n" % (val_acc, self.best_val_acc))
 
 
 def predict_to_file(in_file, out_file):
     """输出预测结果到文件
     结果文件可以提交到 https://www.cluebenchmarks.com 评测。
     """
-    fw = open(out_file, 'w')
+    fw = open(out_file, "w")
     with open(in_file) as fr:
         for l in tqdm(fr):
             l = json.loads(l)
-            text = l['sentence']
+            text = l["sentence"]
             token_ids, segment_ids = tokenizer.encode(text, maxlen=maxlen)
             label = model.predict([[token_ids], [segment_ids]])[0].argmax()
-            l = json.dumps({'id': str(l['id']), 'label': str(label)})
-            fw.write(l + '\n')
+            l = json.dumps({"id": str(l["id"]), "label": str(label)})
+            fw.write(l + "\n")
     fw.close()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     evaluator = Evaluator()
 
@@ -194,10 +185,10 @@ if __name__ == '__main__':
         train_generator.forfit(),
         steps_per_epoch=len(train_generator),
         epochs=50,
-        callbacks=[evaluator]
+        callbacks=[evaluator],
     )
 
 else:
 
-    model.load_weights('best_model.weights')
+    model.load_weights("best_model.weights")
     # predict_to_file('/root/CLUE-master/baselines/CLUEdataset/iflytek/test.json', 'iflytek_predict.json')
