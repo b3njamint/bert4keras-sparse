@@ -77,7 +77,7 @@ bert = build_transformer_model(
 
 output = Lambda(lambda x: x[:, 0])(bert.model.output)
 output = Dense(
-    units=num_classes, activation="sparsemax", kernel_initializer=bert.initializer
+    units=num_classes, activation="softmax", kernel_initializer=bert.initializer
 )(output)
 
 model = keras.models.Model(bert.model.input, output)
