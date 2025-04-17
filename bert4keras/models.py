@@ -4,6 +4,7 @@
 import numpy as np
 from bert4keras.backend import get_available_gpus
 from bert4keras.layers import *
+from tensorflow_addons.activations import sparsemax
 from bert4keras.snippets import insert_arguments
 from bert4keras.snippets import delete_arguments
 from bert4keras.snippets import is_string, string_matching
@@ -1337,7 +1338,7 @@ class RoFormerV2(RoFormer):
                 rate=self.dropout_rate,
                 name="Output-MLM-Dropout",
             )
-            mlm_activation = "sparsemax" if self.with_mlm is True else self.with_mlm
+            mlm_activation = sparsemax if self.with_mlm is True else self.with_mlm
             x = self.apply(
                 inputs=x,
                 layer=Embedding,
