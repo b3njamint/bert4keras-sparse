@@ -162,7 +162,7 @@ successor = build_transformer_model(
 # 判别模型
 x_in = Input(shape=K.int_shape(predecessor.output)[1:])
 x = Lambda(lambda x: x[:, 0])(x_in)
-x = Dense(units=num_classes, activation="sparsemax")(x)
+x = Dense(units=num_classes, activation="softmax")(x)
 classfier = Model(x_in, x)
 
 predecessor_model = Model(predecessor.inputs, classfier(predecessor.output))
