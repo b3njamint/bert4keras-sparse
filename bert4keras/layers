@@ -413,7 +413,7 @@ class BatchConcat(Layer):
 
 
 class MultiHeadAttention(Layer):
-    """多头注意力机制，支持 Low-Rank Adaptation (LoRA)"""
+    """多头注意力机制，支持 Low-Rank Adaptation (LoRA) 及可选 Linformer 线性自注意力。"""
 
     def __init__(
         self,
@@ -429,6 +429,8 @@ class MultiHeadAttention(Layer):
         lora_r=0,
         lora_alpha=None,
         kernel_initializer="glorot_uniform",
+        linformer_k=0,
+        share_kv=False,
         **kwargs
     ):
         super(MultiHeadAttention, self).__init__(**kwargs)
@@ -444,6 +446,8 @@ class MultiHeadAttention(Layer):
         self.lora_r = lora_r
         self.lora_alpha = lora_alpha or lora_r
         self.kernel_initializer = tf.keras.initializers.get(kernel_initializer)
+        self.linformer_k = linformer_k
+        self.share_kv = share_kv
 
     def build(self, input_shape):
         super(MultiHeadAttention, self).build(input_shape)
@@ -479,7 +483,7 @@ class MultiHeadAttention(Layer):
             self.q_lora_B = Dense(
                 units=self.key_size * self.heads,
                 use_bias=False,
-                kernel_initializer=self.kernel_initializer
+                kernel_initializer=tf.zeros_initializer()
             )
             # K adapters (added for pre-training)
             self.k_lora_A = Dense(
@@ -490,7 +494,7 @@ class MultiHeadAttention(Layer):
             self.k_lora_B = Dense(
                 units=self.key_size * self.heads,
                 use_bias=False,
-                kernel_initializer=self.kernel_initializer
+                kernel_initializer=tf.zeros_initializer()
             )
             # V adapters
             self.v_lora_A = Dense(
@@ -501,7 +505,7 @@ class MultiHeadAttention(Layer):
             self.v_lora_B = Dense(
                 units=self.head_size * self.heads,
                 use_bias=False,
-                kernel_initializer=self.kernel_initializer
+                kernel_initializer=tf.zeros_initializer()
             )
             # Output adapters (added for pre-training)
             self.o_lora_A = Dense(
@@ -512,7 +516,22 @@ class MultiHeadAttention(Layer):
             self.o_lora_B = Dense(
                 units=self.out_dim,
                 use_bias=False,
-                kernel_initializer=self.kernel_initializer
+                kernel_initializer=tf.zeros_initializer()
+            )
+        # Linformer 投影矩阵
+        if self.linformer_k > 0:
+            seq_len = input_shape[0][1]
+            self.E = self.add_weight(
+                name="linformer_E",
+                shape=(seq_len, self.linformer_k),
+                initializer="glorot_uniform",
+                trainable=True
+            )
+            self.F = self.E if self.share_kv else self.add_weight(
+                name="linformer_F",
+                shape=(seq_len, self.linformer_k),
+                initializer="glorot_uniform",
+                trainable=True
             )
 
     @recompute_grad
@@ -539,6 +558,10 @@ class MultiHeadAttention(Layer):
         qw = K.reshape(qw, (-1, self.heads, K.shape(qw)[1], self.key_size))
         kw = K.reshape(kw, (-1, self.heads, K.shape(kw)[1], self.key_size))
         vw = K.reshape(vw, (-1, self.heads, K.shape(vw)[1], self.head_size))
+        # Linformer: 序列长度 -> linformer_k
+        if self.linformer_k > 0:
+            kw = tf.einsum("bhld,lk->bhkd", kw, self.E)
+            vw = tf.einsum("bhld,lk->bhkd", vw, self.F)
         # Attention computation
         qkv_inputs = [qw, kw, vw] + inputs[3:]
         o, a = self.pay_attention_to(qkv_inputs, [q_mask, v_mask], **kwargs)
@@ -617,6 +640,8 @@ class MultiHeadAttention(Layer):
             "attention_dropout": self.attention_dropout,
             "return_attention_scores": self.return_attention_scores,
             "kernel_initializer": initializers.serialize(self.kernel_initializer),
+            "linformer_k": self.linformer_k,
+            "share_kv": self.share_kv
         }
         base_config = super(MultiHeadAttention, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
