@@ -479,7 +479,18 @@ class MultiHeadAttention(Layer):
             self.q_lora_B = Dense(
                 units=self.key_size * self.heads,
                 use_bias=False,
-                kernel_initializer=tf.zeros_initializer()
+                kernel_initializer=self.kernel_initializer
+            )
+            # K adapters (added for pre-training)
+            self.k_lora_A = Dense(
+                units=self.lora_r,
+                use_bias=False,
+                kernel_initializer=tf.random_normal_initializer(stddev=0.02)
+            )
+            self.k_lora_B = Dense(
+                units=self.key_size * self.heads,
+                use_bias=False,
+                kernel_initializer=self.kernel_initializer
             )
             # V adapters
             self.v_lora_A = Dense(
@@ -490,7 +501,18 @@ class MultiHeadAttention(Layer):
             self.v_lora_B = Dense(
                 units=self.head_size * self.heads,
                 use_bias=False,
-                kernel_initializer=tf.zeros_initializer()
+                kernel_initializer=self.kernel_initializer
+            )
+            # Output adapters (added for pre-training)
+            self.o_lora_A = Dense(
+                units=self.lora_r,
+                use_bias=False,
+                kernel_initializer=tf.random_normal_initializer(stddev=0.02)
+            )
+            self.o_lora_B = Dense(
+                units=self.out_dim,
+                use_bias=False,
+                kernel_initializer=self.kernel_initializer
             )
 
     @recompute_grad
@@ -507,6 +529,9 @@ class MultiHeadAttention(Layer):
             # Q update
             delta_q = self.q_lora_B(self.q_lora_A(q)) * scale
             qw = qw + delta_q
+            # K update (added for pre-training)
+            delta_k = self.k_lora_B(self.k_lora_A(k)) * scale
+            kw = kw + delta_k
             # V update
             delta_v = self.v_lora_B(self.v_lora_A(v)) * scale
             vw = vw + delta_v
@@ -518,7 +543,11 @@ class MultiHeadAttention(Layer):
         qkv_inputs = [qw, kw, vw] + inputs[3:]
         o, a = self.pay_attention_to(qkv_inputs, [q_mask, v_mask], **kwargs)
         # Output projection
-        o = self.o_dense(K.reshape(o, (-1, K.shape(o)[1], self.out_dim)))
+        o_reshaped = K.reshape(o, (-1, K.shape(o)[1], self.heads * self.head_size))
+        o = self.o_dense(o_reshaped)
+        if self.lora_r > 0:
+            delta_o = self.o_lora_B(self.o_lora_A(o_reshaped)) * scale
+            o = o + delta_o
         return [o, a] if self.return_attention_scores else o
 
 
@@ -1066,17 +1095,17 @@ class FeedForward(Layer):
 
             if self.lora_r > 0:
                 # Initialize LoRA parameters
-                lora_A = self.add_weight(
-                    name=f"lora_A_{i}",
-                    shape=(input_shape[-1], self.lora_r),
-                    initializer=self.kernel_initializer,
-                    trainable=True,
+                lora_A = Dense(
+                    units=self.lora_r,
+                    use_bias=False,
+                    kernel_initializer=tf.random_normal_initializer(stddev=0.02),
+                    name=f"intermediate_lora_A_{i}"
                 )
-                lora_B = self.add_weight(
-                    name=f"lora_B_{i}",
-                    shape=(self.lora_r, self.units),
-                    initializer=self.kernel_initializer,
-                    trainable=True,
+                lora_B = Dense(
+                    units=self.units,
+                    use_bias=False,
+                    kernel_initializer=self.kernel_initializer,
+                    name=f"intermediate_lora_B_{i}"
                 )
                 self.lora_As.append(lora_A)
                 self.lora_Bs.append(lora_B)
@@ -1090,7 +1119,23 @@ class FeedForward(Layer):
             units=output_dim,
             use_bias=self.use_bias,
             kernel_initializer=self.kernel_initializer,
+            name="output_dense"
         )
+
+        # LoRA components for output layer (added for pre-training)
+        if self.lora_r > 0:
+            self.o_lora_A = Dense(
+                units=self.lora_r,
+                use_bias=False,
+                kernel_initializer=tf.random_normal_initializer(stddev=0.02),
+                name="output_lora_A"
+            )
+            self.o_lora_B = Dense(
+                units=output_dim,
+                use_bias=False,
+                kernel_initializer=self.kernel_initializer,
+                name="output_lora_B"
+            )
 
     def call(self, inputs):
         x = inputs
@@ -1098,13 +1143,18 @@ class FeedForward(Layer):
             x_proj = self.i_dense_layers[i](x)
             if self.lora_r > 0:
                 # Apply LoRA adaptation
-                lora_output = tf.matmul(x, self.lora_As[i])
-                lora_output = tf.matmul(lora_output, self.lora_Bs[i])
+                lora_output = self.lora_As[i](x)
+                lora_output = self.lora_Bs[i](lora_output)
                 x_proj += self.lora_scales[i] * lora_output
             x_proj = activation(x_proj)
             x = x_proj if i == 0 else x * x_proj  # For GLU if multiple activations
-        x = self.o_dense(x)
-        return x
+        output = self.o_dense(x)
+        if self.lora_r > 0:
+            scale = self.lora_alpha / float(self.lora_r)
+            output_lora = self.o_lora_B(self.o_lora_A(x)) * scale
+            output = output + output_lora
+            
+        return output
 
 
     def get_config(self):
