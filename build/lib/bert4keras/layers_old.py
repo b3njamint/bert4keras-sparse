@@ -411,34 +411,29 @@ class BatchConcat(Layer):
     def compute_output_shape(self, input_shape):
         return input_shape[0]
 
+
 class MultiHeadAttention(Layer):
-    """多头注意力机制，支持可选 Linformer 线性自注意力"""
+    """多头注意力机制"""
+
     def __init__(
         self,
         heads,
         head_size,
-        seq_len,
-        proj_k=0,
         out_dim=None,
         key_size=None,
         use_bias=True,
         normalization="sparsemax",
         attention_scale=True,
-        attention_dropout=0.0,
+        attention_dropout=None,
         return_attention_scores=False,
-        linformer_k=0,
-        share_kv=False,
         kernel_initializer="glorot_uniform",
         **kwargs
     ):
-        super().__init__(**kwargs)
+        super(MultiHeadAttention, self).__init__(**kwargs)
         self.heads = heads
         self.head_size = head_size
-        self.key_size = key_size or head_size
         self.out_dim = out_dim or heads * head_size
-        self.seq_len = seq_len
-        self.linformer_k = linformer_k
-        self.share_kv = share_kv
+        self.key_size = key_size or head_size
         self.use_bias = use_bias
         self.normalization = normalization
         self.attention_scale = attention_scale
@@ -447,132 +442,127 @@ class MultiHeadAttention(Layer):
         self.kernel_initializer = initializers.get(kernel_initializer)
 
     def build(self, input_shape):
-        # Q, K, V projections
-        self.q_dense = Dense(self.key_size * self.heads,
-                             use_bias=self.use_bias,
-                             kernel_initializer=self.kernel_initializer)
-        self.k_dense = Dense(self.key_size * self.heads,
-                             use_bias=self.use_bias,
-                             kernel_initializer=self.kernel_initializer)
-        self.v_dense = Dense(self.head_size * self.heads,
-                             use_bias=self.use_bias,
-                             kernel_initializer=self.kernel_initializer)
-        # Linformer seq proj
-        if self.linformer_k > 0:
-            self.E = self.add_weight(name="linformer_E",
-                                     shape=(self.seq_len, self.linformer_k),
-                                     initializer=self.kernel_initializer,
-                                     trainable=True)
-            if self.share_kv:
-                self.F = self.E
-            else:
-                self.F = self.add_weight(name="linformer_F",
-                                         shape=(self.seq_len, self.linformer_k),
-                                         initializer=self.kernel_initializer,
-                                         trainable=True)
-        # output proj
-        self.o_dense = Dense(self.out_dim,
-                             use_bias=self.use_bias,
-                             kernel_initializer=self.kernel_initializer)
-        if self.attention_dropout:
-            self.dropout_layer = Dropout(self.attention_dropout)
-        super().build(input_shape)
+        super(MultiHeadAttention, self).build(input_shape)
+        self.q_dense = Dense(
+            units=self.key_size * self.heads,
+            use_bias=self.use_bias,
+            kernel_initializer=self.kernel_initializer,
+        )
+        self.k_dense = Dense(
+            units=self.key_size * self.heads,
+            use_bias=self.use_bias,
+            kernel_initializer=self.kernel_initializer,
+        )
+        self.v_dense = Dense(
+            units=self.head_size * self.heads,
+            use_bias=self.use_bias,
+            kernel_initializer=self.kernel_initializer,
+        )
+        self.o_dense = Dense(
+            units=self.out_dim,
+            use_bias=self.use_bias,
+            kernel_initializer=self.kernel_initializer,
+        )
 
+    @recompute_grad
     def call(self, inputs, mask=None, **kwargs):
+        """实现多头注意力
+        q_mask: 对输入的query序列的mask。
+                主要是将输出结果的padding部分置0。
+        v_mask: 对输入的value序列的mask。
+                主要是防止attention读取到padding信息。
+        """
         q, k, v = inputs[:3]
-        q_mask, v_mask = (mask or (None, None))[:2]
-        # linear projections
+        q_mask, v_mask = None, None
+        if mask is not None:
+            q_mask, v_mask = mask[0], mask[2]
+        # 线性变换
         qw = self.q_dense(q)
         kw = self.k_dense(k)
         vw = self.v_dense(v)
-        # reshape to (B, H, L, D)
-        B = tf.shape(qw)[0]
-        L = tf.shape(qw)[1]
-        qw = K.reshape(qw, (B, L, self.heads, self.key_size))
-        kw = K.reshape(kw, (B, L, self.heads, self.key_size))
-        vw = K.reshape(vw, (B, L, self.heads, self.head_size))
-        # transpose to (B, H, L, D)
-        qw = K.permute_dimensions(qw, (0,2,1,3))
-        kw = K.permute_dimensions(kw, (0,2,1,3))
-        vw = K.permute_dimensions(vw, (0,2,1,3))
-        # Linformer projection on seq dim
-        if self.linformer_k > 0:
-            # project K and V: (B,H,L,D) -> (B,H,k,D)
-            kw = tf.einsum('bhld,lk->bhkd', kw, self.E)
-            vw = tf.einsum('bhld,lk->bhkd', vw, self.F)
-        # attention scores
-        scores = tf.einsum('bhld,bhkd->bhlk', qw, kw)
-        if self.attention_scale:
-            scores = scores / tf.sqrt(tf.cast(self.key_size, tf.float32))
-        A = attention_normalize(scores, v_mask, -1, self.normalization)
-        if self.attention_dropout:
-            A = self.dropout_layer(A)
-        # attention output
-        out = tf.einsum('bhlk,bhkd->bhld', A, vw)
-        # reshape and final projection
-        out = K.permute_dimensions(out, (0,2,1,3))  # (B, L, H, D)
-        out = K.reshape(out, (B, L, self.heads * self.head_size))
-        o = self.o_dense(out)
+        # 形状变换
+        qw = K.reshape(qw, (self.heads, self.key_size), -1)
+        kw = K.reshape(kw, (self.heads, self.key_size), -1)
+        vw = K.reshape(vw, (self.heads, self.head_size), -1)
+        # Attention
+        qkv_inputs = [qw, kw, vw] + inputs[3:]
+        qv_masks = [q_mask, v_mask]
+        o, a = self.pay_attention_to(qkv_inputs, qv_masks, **kwargs)
+        # 完成输出
+        o = self.o_dense(K.flatten(o, 2))
+        # 返回结果
         if self.return_attention_scores:
-            return [o, A]
-        return o
-    
+            return [o, a]
+        else:
+            return o
+
     def pay_attention_to(self, inputs, mask=None, **kwargs):
-        """标准点乘多头注意力逻辑，支持Rotary和相对偏置"""
-        (qw, kw, vw) = inputs
+        """实现标准的乘性多头注意力
+        a_bias: 对attention矩阵的bias。
+                不同的attention bias对应不同的应用。
+        p_bias: 在attention里的位置偏置。
+                一般用来指定相对位置编码的种类。
+        说明: 这里单独分离出pay_attention_to函数，是为了方便
+              继承此类来定义不同形式的attention；此处要求
+              返回o.shape=(batch_size, seq_len, heads, head_size)。
+        """
+        (qw, kw, vw), n = inputs[:3], 3
         q_mask, v_mask = mask
-        a_bias = kwargs.get('a_bias', None)
-        p_bias = kwargs.get('p_bias', None)
-        n = 0
-        if a_bias is not None:
-            a_bias = inputs[n]; n += 1
-        if p_bias == 'rotary':
+        a_bias, p_bias = kwargs.get("a_bias"), kwargs.get("p_bias")
+        if a_bias:
+            a_bias = inputs[n]
+            n += 1
+        if p_bias == "rotary":
             qw, kw = apply_rotary_position_embeddings(inputs[n], qw, kw)
-            n += 1
-        # compute raw attention
-        a = tf.einsum('bhld,bhkd->bhlk', qw, kw)
-        # relative position
-        if p_bias == 'typical_relative':
-            pos = inputs[n]
-            a += tf.einsum('bhld,ld->bhlk', qw, pos)
-            n += 1
-        elif p_bias == 't5_relative':
-            pos = K.permute_dimensions(inputs[n], (2,0,1))
-            a += K.expand_dims(pos, 0)
-            n += 1
-        # scaling & bias mask
+        # Attention
+        a = tf.einsum("bjhd,bkhd->bhjk", qw, kw)
+        # 处理位置编码
+        if p_bias == "typical_relative":
+            position_bias = inputs[n]
+            a = a + tf.einsum("bjhd,jkd->bhjk", qw, position_bias)
+        elif p_bias == "t5_relative":
+            position_bias = K.permute_dimensions(inputs[n], (2, 0, 1))
+            a = a + K.expand_dims(position_bias, 0)
+        # Attention（续）
         if self.attention_scale:
-            a = a / tf.sqrt(tf.cast(self.key_size, tf.float32))
+            a = a / self.key_size**0.5
         if a_bias is not None and K.ndim(a_bias) == 3:
             a_bias = align(a_bias, [0, -2, -1], K.ndim(a))
         A = attention_normalize(a, v_mask, -1, self.normalization, a_bias)
         if self.attention_dropout:
-            A = self.dropout_layer(A)
-        # attention output
-        o = tf.einsum('bhlk,bhkd->bhld', A, vw)
-        if p_bias == 'typical_relative':
-            o += tf.einsum('bhlk,ld->bhld', A, pos)
-        return o, A
-
-    def compute_mask(self, inputs, mask=None):
-        # If mask is a list (e.g., [q_mask, k_mask, …]), only propagate the sequence mask
-        if isinstance(mask, (list, tuple)):
-            return mask[0]
-        return mask
+            A = Dropout(self.attention_dropout)(A)
+        # 完成输出
+        o = tf.einsum("bhjk,bkhd->bjhd", A, vw)
+        if p_bias == "typical_relative":
+            o = o + tf.einsum("bhjk,jkd->bjhd", A, position_bias)
+        return o, a
 
     def compute_output_shape(self, input_shape):
-        # Return the same spatial shape as the primary input
-        if isinstance(input_shape, (list, tuple)):
-            return input_shape[0]
-        return input_shape
+        o_shape = (input_shape[0][0], input_shape[0][1], self.out_dim)
+        if self.return_attention_scores:
+            a_shape = (
+                input_shape[0][0],
+                self.heads,
+                input_shape[0][1],
+                input_shape[1][1],
+            )
+            return [o_shape, a_shape]
+        else:
+            return o_shape
+
+    def compute_mask(self, inputs, mask=None):
+        if mask is not None:
+            if self.return_attention_scores:
+                return [mask[0], None]
+            else:
+                return mask[0]
 
     def get_config(self):
         config = {
             "heads": self.heads,
             "head_size": self.head_size,
-            "seq_len": self.seq_len,
-            "linformer_k": self.linformer_k,
-            "share_kv": self.share_kv,
+            "out_dim": self.out_dim,
+            "key_size": self.key_size,
             "use_bias": self.use_bias,
             "normalization": self.normalization,
             "attention_scale": self.attention_scale,
@@ -583,28 +573,31 @@ class MultiHeadAttention(Layer):
         base_config = super(MultiHeadAttention, self).get_config()
         return dict(list(base_config.items()) + list(config.items()))
 
+
 class GatedAttentionUnit(Layer):
-    """门控注意力单元，集成Linformer序列投影"""
+    """门控注意力单元
+    链接：https://arxiv.org/abs/2202.10447
+    介绍：https://kexue.fm/archives/8934
+    说明：没有加入加性相对位置编码，个人认为是不必要的；如果觉得有必要，
+         可以自行通过a_bias传入。
+    """
+
     def __init__(
         self,
         units,
         key_size,
-        seq_len,
-        proj_k=0,
-        activation='swish',
+        activation="swish",
         use_bias=True,
-        normalization='squared_relu',
+        normalization="squared_relu",
         self_attention=True,
         attention_scale=True,
-        attention_dropout=0.0,
-        kernel_initializer='glorot_uniform',
+        attention_dropout=None,
+        kernel_initializer="glorot_uniform",
         **kwargs
     ):
-        super().__init__(**kwargs)
+        super(GatedAttentionUnit, self).__init__(**kwargs)
         self.units = units
         self.key_size = key_size
-        self.seq_len = seq_len
-        self.proj_k = proj_k
         self.activation = activations.get(activation)
         self.use_bias = use_bias
         self.normalization = normalization
@@ -613,95 +606,99 @@ class GatedAttentionUnit(Layer):
         self.attention_dropout = attention_dropout
         self.kernel_initializer = initializers.get(kernel_initializer)
 
+    @integerize_shape
     def build(self, input_shape):
-        super().build(input_shape)
-        hidden = input_shape[-1]
+        super(GatedAttentionUnit, self).build(input_shape)
+        hidden_size = input_shape[-1]
+        if isinstance(hidden_size, (list, tuple)):
+            hidden_size = input_shape[0][-1]
         if self.self_attention:
-            self.i_dense = Dense(units=2*self.units + self.key_size,
-                                 activation=self.activation,
-                                 use_bias=self.use_bias,
-                                 kernel_initializer=self.kernel_initializer)
-            self.qk_dense = Dense(units=self.key_size,
-                                   use_bias=self.use_bias,
-                                   kernel_initializer=self.kernel_initializer)
+            self.i_dense = Dense(
+                units=2 * self.units + self.key_size,
+                activation=self.activation,
+                use_bias=self.use_bias,
+                kernel_initializer=self.kernel_initializer,
+            )
+            self.q_scaleoffset = ScaleOffset(offset=self.use_bias)
+            self.k_scaleoffset = ScaleOffset(offset=self.use_bias)
         else:
-            self.uq_dense = Dense(units=self.units + self.key_size,
-                                  activation=self.activation,
-                                  use_bias=self.use_bias,
-                                  kernel_initializer=self.kernel_initializer)
-            self.k_dense = Dense(units=self.key_size,
-                                 activation=self.activation,
-                                 use_bias=self.use_bias,
-                                 kernel_initializer=self.kernel_initializer)
-            self.v_dense = Dense(units=self.units,
-                                 activation=self.activation,
-                                 use_bias=self.use_bias,
-                                 kernel_initializer=self.kernel_initializer)
-        # Linformer projections
-        if self.proj_k > 0:
-            self.q_lin_proj = Dense(units=self.proj_k,
-                                    use_bias=False,
-                                    kernel_initializer=self.kernel_initializer)
-            self.k_lin_proj = Dense(units=self.proj_k,
-                                    use_bias=False,
-                                    kernel_initializer=self.kernel_initializer)
-        self.o_dense = Dense(units=hidden,
-                             use_bias=self.use_bias,
-                             kernel_initializer=self.kernel_initializer)
-        if self.attention_dropout:
-            self.dropout_layer = Dropout(self.attention_dropout)
+            self.uq_dense = Dense(
+                units=self.units + self.key_size,
+                activation=self.activation,
+                use_bias=self.use_bias,
+                kernel_initializer=self.kernel_initializer,
+            )
+            self.k_dense = Dense(
+                units=self.key_size,
+                activation=self.activation,
+                use_bias=self.use_bias,
+                kernel_initializer=self.kernel_initializer,
+            )
+            self.v_dense = Dense(
+                units=self.units,
+                activation=self.activation,
+                use_bias=self.use_bias,
+                kernel_initializer=self.kernel_initializer,
+            )
+        self.o_dense = Dense(
+            units=hidden_size,
+            use_bias=self.use_bias,
+            kernel_initializer=self.kernel_initializer,
+        )
 
+    @recompute_grad
     def call(self, inputs, mask=None, a_bias=None, p_bias=None):
-        x = inputs if not isinstance(inputs, list) else inputs[0]
-        m = None if mask is None else mask[0]
+        if not isinstance(inputs, list):
+            inputs, mask = [inputs], [mask]
         if self.self_attention:
-            ivq = self.i_dense(x)
-            u, v, qk = tf.split(ivq, [self.units, self.units, self.key_size], axis=-1)
-            q = k = self.qk_dense(qk)
+            x, n = inputs[0], 1
         else:
-            q_in, k_in, v_in = inputs[:3]
-            uq = self.uq_dense(q_in)
-            u, q = tf.split(uq, [self.units, self.key_size], axis=-1)
-            k = self.k_dense(k_in)
-            v = self.v_dense(v_in)
-        # Linformer projection on sequence dim
-        if self.proj_k > 0:
-            q = tf.transpose(q, (0,2,1))  # (B, D, L)
-            k = tf.transpose(k, (0,2,1))
-            q = tf.transpose(self.q_lin_proj(q), (0,2,1))  # (B, proj_k, D)
-            k = tf.transpose(self.k_lin_proj(k), (0,2,1))
-        # gated attention
-        scores = tf.einsum('bmd,bnd->bmn', q, k)
+            (q, k, v), n = inputs[:3], 3
+        mask = None if mask is None else mask[0]
+        if a_bias:
+            a_bias = inputs[n]
+            n += 1
+        # 投影变换
+        if self.self_attention:
+            x = self.i_dense(x)
+            u, v, qk = tf.split(x, [self.units, self.units, self.key_size], -1)
+            q, k = self.q_scaleoffset(qk), self.k_scaleoffset(qk)
+        else:
+            uq = self.uq_dense(q)
+            u, q = tf.split(uq, [self.units, self.key_size], -1)
+            k, v = self.k_dense(k), self.v_dense(v)
+        # 加入RoPE
+        if p_bias == "rotary":
+            q, k = apply_rotary_position_embeddings(inputs[n], q, k)
+        # Attention
+        a = tf.einsum("bmd,bnd->bmn", q, k)
         if self.attention_scale:
-            scores = scores / tf.sqrt(tf.cast(self.key_size, tf.float32))
-        A = attention_normalize(scores, m, -1, self.normalization, a_bias)
+            a = a / self.key_size**0.5
+        A = attention_normalize(a, mask, -1, self.normalization, a_bias)
         if self.attention_dropout:
-            A = self.dropout_layer(A)
-        out = self.o_dense(u * tf.einsum('bmn,bnd->bmd', A, v))
-        return out
+            A = Dropout(self.attention_dropout)(A)
+        # 计算输出
+        o = self.o_dense(u * tf.einsum("bmn,bnd->bmd", A, v))
+        return o
 
     def compute_mask(self, inputs, mask=None):
-        # If mask is passed as a list (e.g. from a previous layer),
-        # we only care about the first element (the sequence mask).
-        if isinstance(mask, (list, tuple)):
+        if isinstance(mask, list):
             return mask[0]
-        return mask
+        else:
+            return mask
 
     def compute_output_shape(self, input_shape):
-        # We return the same spatial shape as the primary input.
-        # If input_shape is a list/tuple, treat the first element as the primary.
-        if isinstance(input_shape, (list, tuple)):
+        if isinstance(input_shape[0], (list, tuple)):
             return input_shape[0]
-        return input_shape
+        else:
+            return input_shape
 
     def get_config(self):
         config = {
             "units": self.units,
             "key_size": self.key_size,
-            "seq_len":   self.seq_len,
-            "proj_k":    self.proj_k,
             "activation": activations.serialize(self.activation),
-            "use_bias":  self.use_bias,
+            "use_bias": self.use_bias,
             "normalization": self.normalization,
             "self_attention": self.self_attention,
             "attention_scale": self.attention_scale,
@@ -1008,7 +1005,11 @@ class RelativePositionEmbeddingT5(RelativePositionEmbedding):
 
 
 class FeedForward(Layer):
-    """FeedForward layer with optional Low-Rank Adaptation (LoRA)."""
+    """FeedForward层
+    如果activation不是一个list，那么它就是两个Dense层的叠加；如果activation是
+    一个list，那么第一个Dense层将会被替换成门控线性单元（Gated Linear Unit）。
+    参考论文: https://arxiv.org/abs/2002.05202
+    """
 
     def __init__(
         self,
@@ -1016,8 +1017,6 @@ class FeedForward(Layer):
         activation="relu",
         use_bias=True,
         kernel_initializer="glorot_uniform",
-        lora_r=0,
-        lora_alpha=1.0,
         **kwargs
     ):
         super(FeedForward, self).__init__(**kwargs)
@@ -1027,90 +1026,34 @@ class FeedForward(Layer):
         self.activation = [activations.get(act) for act in activation]
         self.use_bias = use_bias
         self.kernel_initializer = initializers.get(kernel_initializer)
-        self.lora_r = lora_r
-        self.lora_alpha = lora_alpha
 
+    @integerize_shape
     def build(self, input_shape):
         super(FeedForward, self).build(input_shape)
         output_dim = input_shape[-1]
 
-        self.i_dense_layers = []
-        self.lora_As = []
-        self.lora_Bs = []
-        self.lora_scales = []
-
         for i, activation in enumerate(self.activation):
             i_dense = Dense(
                 units=self.units,
-                activation=None,
+                activation=activation,
                 use_bias=self.use_bias,
                 kernel_initializer=self.kernel_initializer,
             )
-            self.i_dense_layers.append(i_dense)
-
-            if self.lora_r > 0:
-                # Initialize LoRA parameters
-                lora_A = Dense(
-                    units=self.lora_r,
-                    use_bias=False,
-                    kernel_initializer=tf.random_normal_initializer(stddev=0.02),
-                    name=f"intermediate_lora_A_{i}"
-                )
-                lora_B = Dense(
-                    units=self.units,
-                    use_bias=False,
-                    kernel_initializer=self.kernel_initializer,
-                    name=f"intermediate_lora_B_{i}"
-                )
-                self.lora_As.append(lora_A)
-                self.lora_Bs.append(lora_B)
-                self.lora_scales.append(self.lora_alpha / self.lora_r)
-            else:
-                self.lora_As.append(None)
-                self.lora_Bs.append(None)
-                self.lora_scales.append(None)
+            setattr(self, "i%s_dense" % i, i_dense)
 
         self.o_dense = Dense(
             units=output_dim,
             use_bias=self.use_bias,
             kernel_initializer=self.kernel_initializer,
-            name="output_dense"
         )
 
-        # LoRA components for output layer (added for pre-training)
-        if self.lora_r > 0:
-            self.o_lora_A = Dense(
-                units=self.lora_r,
-                use_bias=False,
-                kernel_initializer=tf.random_normal_initializer(stddev=0.02),
-                name="output_lora_A"
-            )
-            self.o_lora_B = Dense(
-                units=output_dim,
-                use_bias=False,
-                kernel_initializer=self.kernel_initializer,
-                name="output_lora_B"
-            )
-
+    @recompute_grad
     def call(self, inputs):
-        x = inputs
-        for i, activation in enumerate(self.activation):
-            x_proj = self.i_dense_layers[i](x)
-            if self.lora_r > 0:
-                # Apply LoRA adaptation
-                lora_output = self.lora_As[i](x)
-                lora_output = self.lora_Bs[i](lora_output)
-                x_proj += self.lora_scales[i] * lora_output
-            x_proj = activation(x_proj)
-            x = x_proj if i == 0 else x * x_proj  # For GLU if multiple activations
-        output = self.o_dense(x)
-        if self.lora_r > 0:
-            scale = self.lora_alpha / float(self.lora_r)
-            output_lora = self.o_lora_B(self.o_lora_A(x)) * scale
-            output = output + output_lora
-            
-        return output
-
+        x = self.i0_dense(inputs)
+        for i in range(1, len(self.activation)):
+            x = x * getattr(self, "i%s_dense" % i)(inputs)
+        x = self.o_dense(x)
+        return x
 
     def get_config(self):
         config = {

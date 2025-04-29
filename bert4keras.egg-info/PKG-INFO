@@ -1,0 +1,19 @@
+Metadata-Version: 2.2
+Name: bert4keras
+Version: 0.11.5
+Summary: an elegant bert4keras
+Home-page: https://github.com/bojone/bert4keras
+Author: bojone
+Author-email: bojone@spaces.ac.cn
+License: Apache License 2.0
+License-File: LICENSE
+Requires-Dist: keras<=2.3.1
+Dynamic: author
+Dynamic: author-email
+Dynamic: description
+Dynamic: home-page
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: summary
+
+bert4keras: https://github.com/bojone/bert4keras

@@ -1,0 +1,15 @@
+LICENSE
+README.md
+setup.py
+bert4keras/__init__.py
+bert4keras/backend.py
+bert4keras/layers_old.py
+bert4keras/models.py
+bert4keras/optimizers.py
+bert4keras/snippets.py
+bert4keras/tokenizers.py
+bert4keras.egg-info/PKG-INFO
+bert4keras.egg-info/SOURCES.txt
+bert4keras.egg-info/dependency_links.txt
+bert4keras.egg-info/requires.txt
+bert4keras.egg-info/top_level.txt
